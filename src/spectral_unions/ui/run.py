@@ -23,3 +23,6 @@ st.sidebar.subheader(f"Logged in W&B as: {wandb.api.viewer()['entity']}")
 checkpoint_path = select_checkpoint()
 model: MyLightningModule = get_model(checkpoint_path=checkpoint_path)
 model
+
+
+# TODO: add some cool demos from the existing ones
