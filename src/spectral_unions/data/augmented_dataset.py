@@ -38,6 +38,7 @@ class PartialAugmentedDataset(CustomDataset):
         independent_augmentation: bool,
         relative_area: bool,
         gpus: int,
+        train_datasplit_folder: str,
         introduce_input_evals_noise: bool = False,
         return_mesh=False,
         evals_encoder: Optional[Callable] = None,
@@ -52,6 +53,7 @@ class PartialAugmentedDataset(CustomDataset):
         self.independent_augmentation = independent_augmentation
         self.introduce_input_evals_noise = introduce_input_evals_noise
         self.relative_area = relative_area
+        self.train_datasplit_folder = train_datasplit_folder
 
         self.sample_key_list: List[str] = sample_key_list
         self.dataset_name = dataset_name
@@ -614,6 +616,7 @@ def main(cfg: omegaconf.DictConfig) -> None:
     data = Path(get_env("PARTIAL_DATASET_V2"))
     trainset = (PROJECT_ROOT / data / "datasplit_singleshape" / "train.txt").read_text().splitlines()
 
+    cfg.nn.data.datasets.train._target_ = "spectral_unions.data.augmented_dataset.PartialAugmentedDataset"
     dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.train, sample_key_list=trainset, _recursive_=False)
     loader = DataLoader(dataset, batch_size=32, num_workers=12, persistent_workers=False)
     for x in tqdm(loader):

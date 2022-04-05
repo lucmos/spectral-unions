@@ -5,12 +5,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
+import hydra
 import numpy as np
+import omegaconf
 import scipy
 import torch
-from pytorch_lightning import seed_everything
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from nn_core.common import PROJECT_ROOT
 from nn_core.common.utils import get_env
 
 from spectral_unions.data.dataset_utils import (
@@ -24,9 +27,6 @@ from spectral_unions.data.dataset_utils import (
 )
 from spectral_unions.spectral.eigendecomposition import ShapeEigendecomposition, ShapeHamiltonianAugmenter
 
-# fixme: broken
-load_config = ...
-
 
 class RandomAugmentedDataset(CustomDataset):
     possible_random_thresholds = [0.25, 0.5, 0.75]
@@ -36,34 +36,38 @@ class RandomAugmentedDataset(CustomDataset):
 
     def __init__(
         self,
-        hparams: dict,
         dataset_name: str,
         sample_key_list: List[str],
+        boundary_conditions: str,
+        union_num_eigenvalues: str,
+        part_num_eigenvalues: str,
+        min_union_prior: bool,
+        independent_augmentation: bool,
+        relative_area: bool,
+        gpus: int,
+        train_datasplit_folder: str,
+        introduce_input_evals_noise: bool = False,
         return_mesh=False,
         evals_encoder: Optional[Callable] = None,
         augment: bool = False,
     ):
-        self.hparams: dict = hparams
         self.augment = augment
-        self.boundary_conditions = self.hparams["params"]["global"]["boundary_conditions"].lower()
+        self.boundary_conditions = boundary_conditions.lower()
         assert self.boundary_conditions == "dirichlet"
         self.evals_filename = f"evals_{self.boundary_conditions}.mat"
 
-        self.min_union_prior = self.hparams["params"]["dataset"]["min_union_prior"]
-        self.independent_augmentation = self.hparams["params"]["dataset"]["independent_augmentation"]
-        self.introduce_input_evals_noise = (
-            self.hparams["params"]["dataset"]["introduce_input_evals_noise"]
-            if "introduce_input_evals_noise" in self.hparams["params"]["dataset"]
-            else False
-        )
-        self.relative_area = self.hparams["params"]["dataset"]["relative_area"]
+        self.min_union_prior = min_union_prior
+        self.independent_augmentation = independent_augmentation
+        self.introduce_input_evals_noise = introduce_input_evals_noise
+        self.relative_area = relative_area
+        self.train_datasplit_folder = train_datasplit_folder
 
         self.sample_key_list: List[str] = sample_key_list
         self.dataset_name = dataset_name
         self.dataset_root: Path = Path(get_env(dataset_name))
 
-        self.union_num_eigenvalues: int = hparams["params"]["global"]["union_num_eigenvalues"]
-        self.part_num_eigenvalues: int = hparams["params"]["global"]["part_num_eigenvalues"]
+        self.union_num_eigenvalues: int = union_num_eigenvalues
+        self.part_num_eigenvalues: int = part_num_eigenvalues
 
         self.template_vertices = torch.from_numpy(load_mat(self.dataset_root / "extras", "VERT.mat"))
         self.template_faces = torch.from_numpy(load_mat(self.dataset_root / "extras", "TRIV.mat").astype("long")) - 1
@@ -102,7 +106,10 @@ class RandomAugmentedDataset(CustomDataset):
         self.default_augmentation_threshold_x1 = 0.5
         self.default_augmentation_threshold_x2 = 0.5
 
-        split = Path(self.hparams["params"]["dataset"]["train_datasplit_folder"]) / "train.txt"
+        self.gpus = gpus
+        self.device = "cpu" if gpus == 0 else "cuda"
+
+        split = Path(self.train_datasplit_folder) / "train.txt"
         self.intersection_classes = self.get_eq_classes_uniq(
             datasplit_name=split,
             n_common_vertices=40,
@@ -121,9 +128,11 @@ class RandomAugmentedDataset(CustomDataset):
                 return pickle.load(f)
         else:
             dataset = PartialDatasetV2(
-                self.hparams,
-                self.dataset_name,
-                self.sample_key_list,
+                dataset_name=self.dataset_name,
+                sample_key_list=self.sample_key_list,
+                boundary_conditions=self.boundary_conditions,
+                union_num_eigenvalues=self.union_num_eigenvalues,
+                part_num_eigenvalues=self.part_num_eigenvalues,
                 return_mesh=False,
                 no_evals_and_area=True,
             )
@@ -151,6 +160,7 @@ class RandomAugmentedDataset(CustomDataset):
                             mask=mask,
                             num_basis_vectors=40,
                             threshold=threshold,
+                            device=self.device,
                         )
                         mask_hash = hashlib.md5(mask.numpy().tobytes()).hexdigest()
                         if mask_hash not in mask_hash2name:
@@ -171,6 +181,7 @@ class RandomAugmentedDataset(CustomDataset):
                     mask=x1_indices,
                     num_basis_vectors=40,
                     threshold=0.5,
+                    device=self.device,
                 )
 
                 for x2_name in uniq_masks_part_names:
@@ -233,6 +244,7 @@ class RandomAugmentedDataset(CustomDataset):
                 mask=x1_indices,
                 num_basis_vectors=40,
                 threshold=0.5,
+                device=self.device,
             )
             x2_indices = get_augmented_mask(
                 template_eigen=self.template_eigen,
@@ -242,6 +254,7 @@ class RandomAugmentedDataset(CustomDataset):
                 mask=x2_indices,
                 num_basis_vectors=40,
                 threshold=x2_random_threshold,
+                device=self.device,
             )
 
             union_indices = (x1_indices + x2_indices).bool().float()
@@ -272,6 +285,7 @@ class RandomAugmentedDataset(CustomDataset):
                 pose_id=pose_id,
                 mask=union_indices,
                 k=self.union_num_eigenvalues,
+                device=self.device,
             )
             x1_evals = get_mask_evals(
                 template_eigen=self.template_eigen,
@@ -280,6 +294,7 @@ class RandomAugmentedDataset(CustomDataset):
                 pose_id=pose_id,
                 mask=x1_indices,
                 k=self.part_num_eigenvalues,
+                device=self.device,
             )
             x2_evals = get_mask_evals(
                 template_eigen=self.template_eigen,
@@ -288,6 +303,7 @@ class RandomAugmentedDataset(CustomDataset):
                 pose_id=pose_id,
                 mask=x2_indices,
                 k=self.part_num_eigenvalues,
+                device=self.device,
             )
 
             sample: Dict[str, torch.Tensor] = {
@@ -349,6 +365,7 @@ class RandomAugmentedDataset(CustomDataset):
                     mask=x1_indices,
                     num_basis_vectors=x1_num_basis,
                     threshold=x1_threshold,
+                    device=self.device,
                 )
                 x2_indices = get_augmented_mask(
                     template_eigen=self.template_eigen,
@@ -358,6 +375,7 @@ class RandomAugmentedDataset(CustomDataset):
                     mask=x2_indices,
                     num_basis_vectors=x2_num_basis,
                     threshold=x2_threshold,
+                    device=self.device,
                 )
             else:
                 x1_indices = get_augmented_mask(
@@ -368,6 +386,7 @@ class RandomAugmentedDataset(CustomDataset):
                     mask=x1_indices,
                     num_basis_vectors=self.default_augmentation_num_basis_x1,
                     threshold=self.default_augmentation_threshold_x1,
+                    device=self.device,
                 )
                 x2_indices = get_augmented_mask(
                     template_eigen=self.template_eigen,
@@ -377,6 +396,7 @@ class RandomAugmentedDataset(CustomDataset):
                     mask=x2_indices,
                     num_basis_vectors=self.default_augmentation_num_basis_x2,
                     threshold=self.default_augmentation_threshold_x2,
+                    device=self.device,
                 )
 
             union_indices = (x1_indices + x2_indices).bool().float()
@@ -398,6 +418,7 @@ class RandomAugmentedDataset(CustomDataset):
                 pose_id=pose_id,
                 mask=union_indices,
                 k=self.union_num_eigenvalues,
+                device=self.device,
             )
             x1_evals = get_mask_evals(
                 template_eigen=self.template_eigen,
@@ -406,6 +427,7 @@ class RandomAugmentedDataset(CustomDataset):
                 pose_id=pose_id,
                 mask=x1_indices,
                 k=self.part_num_eigenvalues,
+                device=self.device,
             )
             x2_evals = get_mask_evals(
                 template_eigen=self.template_eigen,
@@ -414,6 +436,7 @@ class RandomAugmentedDataset(CustomDataset):
                 pose_id=pose_id,
                 mask=x2_indices,
                 k=self.part_num_eigenvalues,
+                device=self.device,
             )
 
             sample: Dict[str, torch.Tensor] = {
@@ -509,267 +532,297 @@ def _generate_sample_cache(
         )
 
 
-def _regenerate_cache():
-    from spectral_unions.data.partial_dataset_v2 import PartialDatasetV2
+# def _regenerate_cache():
+#     from spectral_unions.data.partial_dataset_v2 import PartialDatasetV2
+#
+#     # todo: genera solo autovalori unione in cui i parametri di augmentation fra x1 e x2
+#     # sono uguali (threshold e num_basis)
+#     # config_name = "experiment.yml"
+#     # cfg = load_config(config_name)
+#
+#     dataset_name = "PARTIAL_DATASET_V2_horses"
+#     datasplit = "train.txt"
+#
+#     data = Path(get_env(dataset_name))
+#     split = Path(cfg["params"]["dataset"]["train_datasplit_folder"]) / datasplit
+#     split = "samples.txt"
+#     # split = Path(cfg["params"]["dataset"]["train_datasplit_folder"]) / "train.txt"
+#     trainset = (data / split).read_text().splitlines()
+#     # trainset = (data / datasplit).read_text().splitlines()
+#
+#     dataset = PartialDatasetV2(cfg, dataset_name, trainset, return_mesh=False, no_evals_and_area=True)
+#     random_dataset = RandomAugmentedDataset(cfg, dataset_name, trainset)
+#
+#     template_eigen = ShapeEigendecomposition(
+#         torch.from_numpy(dataset.template_vertices),
+#         torch.from_numpy(dataset.template_faces.astype("long")),
+#     )
+#
+#     sym_map = torch.from_numpy(
+#         scipy.io.loadmat(dataset.dataset_root / "extras" / "SMPLsym.mat")["idxs"].squeeze().astype("long") - 1
+#     )
+#
+#     for sample1 in tqdm(dataset):
+#         identity_id = sample1["identity_id"]
+#         pose_id = sample1["pose_id"]
+#
+#         x1_id = sample1["id"]
+#         x1_indices = sample1["X1_indices"]
+#         for sample_folder_B, x2_random_threshold in random_dataset.intersection_classes[(str(Path(x1_id) / "A"), 0.5)]:
+#             x2_indices = multi_one_hot(
+#                 load_mat(random_dataset.dataset_root / sample_folder_B, "indices.mat").astype(np.long),
+#                 dataset.num_vertices,
+#             ).squeeze()
+#             _generate_sample_cache(
+#                 template_eigen=template_eigen,
+#                 dataset_name=dataset.dataset_name,
+#                 identity_id=identity_id,
+#                 pose_id=pose_id,
+#                 x1_indices=x1_indices,
+#                 x2_indices=x2_indices,
+#                 x1_num_basis=40,
+#                 x1_threshold=0.5,
+#                 x2_num_basis=40,
+#                 x2_threshold=x2_random_threshold,
+#                 num_eigenvalues=random_dataset.union_num_eigenvalues,
+#                 sym_map=sym_map,
+#             )
 
-    # todo: genera solo autovalori unione in cui i parametri di augmentation fra x1 e x2
-    # sono uguali (threshold e num_basis)
-    # config_name = "experiment.yml"
-    # cfg = load_config(config_name)
 
-    dataset_name = "PARTIAL_DATASET_V2_horses"
-    datasplit = "train.txt"
+@hydra.main(config_path=str(PROJECT_ROOT / "conf"), config_name="default")
+def main(cfg: omegaconf.DictConfig) -> None:
+    """Debug main to quickly develop the Dataset.
 
-    data = Path(get_env(dataset_name))
-    split = Path(cfg["params"]["dataset"]["train_datasplit_folder"]) / datasplit
-    split = "samples.txt"
-    # split = Path(cfg["params"]["dataset"]["train_datasplit_folder"]) / "train.txt"
-    trainset = (data / split).read_text().splitlines()
-    # trainset = (data / datasplit).read_text().splitlines()
+    Args:
+        cfg: the hydra configuration
+    """
 
-    dataset = PartialDatasetV2(cfg, dataset_name, trainset, return_mesh=False, no_evals_and_area=True)
-    random_dataset = RandomAugmentedDataset(cfg, dataset_name, trainset)
+    data = Path(get_env("PARTIAL_DATASET_V2"))
+    trainset = (PROJECT_ROOT / data / "datasplit_singleshape" / "train.txt").read_text().splitlines()
 
-    template_eigen = ShapeEigendecomposition(
-        torch.from_numpy(dataset.template_vertices),
-        torch.from_numpy(dataset.template_faces.astype("long")),
-    )
+    cfg.nn.data.datasets.train._target_ = "spectral_unions.data.random_augmented_dataset.RandomAugmentedDataset"
+    dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.train, sample_key_list=trainset, _recursive_=False)
+    loader = DataLoader(dataset, batch_size=32, num_workers=12, persistent_workers=False)
+    for sample in tqdm(loader):
+        print(sample["union_indices"].shape)
+        _ = sample["X1_indices"]
+        _ = sample["X2_indices"]
+        _ = sample["union_indices"]
 
-    sym_map = torch.from_numpy(
-        scipy.io.loadmat(dataset.dataset_root / "extras" / "SMPLsym.mat")["idxs"].squeeze().astype("long") - 1
-    )
-
-    for sample1 in tqdm(dataset):
-        identity_id = sample1["identity_id"]
-        pose_id = sample1["pose_id"]
-
-        x1_id = sample1["id"]
-        x1_indices = sample1["X1_indices"]
-        for sample_folder_B, x2_random_threshold in random_dataset.intersection_classes[(str(Path(x1_id) / "A"), 0.5)]:
-            x2_indices = multi_one_hot(
-                load_mat(random_dataset.dataset_root / sample_folder_B, "indices.mat").astype(np.long),
-                dataset.num_vertices,
-            ).squeeze()
-            _generate_sample_cache(
-                template_eigen=template_eigen,
-                dataset_name=dataset.dataset_name,
-                identity_id=identity_id,
-                pose_id=pose_id,
-                x1_indices=x1_indices,
-                x2_indices=x2_indices,
-                x1_num_basis=40,
-                x1_threshold=0.5,
-                x2_num_basis=40,
-                x2_threshold=x2_random_threshold,
-                num_eigenvalues=random_dataset.union_num_eigenvalues,
-                sym_map=sym_map,
-            )
+        _ = sample["union_eigenvalues"]
+        _ = sample["X1_eigenvalues"]
+        _ = sample["X2_eigenvalues"]
+        break
 
 
 if __name__ == "__main__":
-    seed_everything(0)
-    _regenerate_cache()
-    assert False
-    config_name = "experiment.yml"
+    main()
 
-    seed_everything(0)
-    cfg = load_config(config_name)
 
-    dataset_name = "PARTIAL_DATASET_V2_horses"
-    dataset_root = Path(get_env(dataset_name))
+# if __name__ == "__main__":
+#     seed_everything(0)
+#     _regenerate_cache()
+#     assert False
+#     config_name = "experiment.yml"
+#
+#     seed_everything(0)
+#     cfg = load_config(config_name)
+#
+#     dataset_name = "PARTIAL_DATASET_V2_horses"
+#     dataset_root = Path(get_env(dataset_name))
+#
+#     split = Path(cfg["params"]["dataset"]["train_datasplit_folder"]) / "train.txt"
+#     sample_key_list = (dataset_root / split).read_text().splitlines()
+#
+#     # get_eq_classes_uniq(dataset_name, "train.txt", 40, overwrite=True)
+#
+#     # print(sample_folder_A)
+#     dataset = RandomAugmentedDataset(cfg, dataset_name, sample_key_list, augment=True, return_mesh=False)
+#
+#     dataset[0]
+#     for sample in tqdm(dataset):
+#         x = sample["X1_indices"]
+#         y = sample["X2_indices"]
+#         z = sample["union_indices"]
+#
+#         a = sample["union_eigenvalues"]
+#         b = sample["X1_eigenvalues"]
+#         c = sample["X2_eigenvalues"]
+#         k = 0
+#         pass
+# assert False
+# # #
+# #
+# # # loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0)
+# # #
+# for x in tqdm(dataset):
+#     pass
+# #
+# # # todo Dataset[0] non prende da cache?
+# _generate_sample_cache(
+#     dataset.template_eigen,
+#     dataset.dataset_root,
+#     "shape000024",
+#     "pose0000235",
+#     dataset[0]["X1_indices"],
+#     dataset[0]["X2_indices"],
+#     num_basis=ShapeEigendecomposition.get_random_num_basis(),
+#     threshold=ShapeHamiltonianAugmenter.get_random_discretized_threshold(),
+#     num_eigenvalues=20,
+# )
+#
+# i = np.random.randint(0, len(dataset))
+# print(i)
+# i = 37344
+# sample = dataset[i]
+#
+# plot_shapes_comparison(
+#     meshes=[
+#         mesh(
+#             v=dataset.template_vertices.numpy(),
+#             f=dataset.template_faces.numpy(),
+#             color=sample["X1_indices"],
+#         ),
+#         mesh(
+#             v=dataset.template_vertices.numpy(),
+#             f=dataset.template_faces.numpy(),
+#             color=sample["X2_indices"],
+#         ),
+#         mesh(
+#             v=dataset.template_vertices.numpy(),
+#             f=dataset.template_faces.numpy(),
+#             color=sample["union_indices"],
+#         ),
+#     ],
+#     names=["x1", "x2", "union"],
+#     showscales=[False, False, False],
+# ).show()
+# assert False
+# ind = sample["union_indices"]
+#
+# print("next")
+# s = set()
+#
+# for i in tqdm(range(10000)):
+#
+#     x1_indices = get_augmented_mask(
+#         template_eigen=dataset.template_eigen,
+#         dataset_root=dataset.dataset_root,
+#         identity_id=sample["identity_id"],
+#         pose_id=sample["pose_id"],
+#         mask=sample["X1_indices"],
+#         num_basis_vectors=ShapeEigendecomposition.get_random_num_basis(),
+#         threshold=ShapeHamiltonianAugmenter.get_random_discretized_threshold(),
+#     )
+#     s.add(x1_indices)
+#     get_mask_evals(
+#         template_eigen=dataset.template_eigen,
+#         dataset_root=dataset.dataset_root,
+#         identity_id=sample["identity_id"],
+#         pose_id=sample["pose_id"],
+#         mask=sample["X1_indices"],
+#     )
+#
+# print(len(s))
+# #
+#
+# assert False
+# mat = scipy.io.loadmat("/home/luca/Desktop/test_3.mat")
+#
+# VERT = torch.from_numpy(mat["VERT"]).float().cpu()
+# TRIV = torch.from_numpy(mat["TRIV"]).long().cpu()
+# ind = torch.from_numpy(mat["ind"]).float().cpu()[0]
 
-    split = Path(cfg["params"]["dataset"]["train_datasplit_folder"]) / "train.txt"
-    sample_key_list = (dataset_root / split).read_text().splitlines()
+# vertex2faces = VF_adjacency_matrix(VERT, TRIV)
+#
+# assert False
 
-    # get_eq_classes_uniq(dataset_name, "train.txt", 40, overwrite=True)
-
-    # print(sample_folder_A)
-    dataset = RandomAugmentedDataset(cfg, dataset_name, sample_key_list, augment=True, return_mesh=False)
-
-    dataset[0]
-    for sample in tqdm(dataset):
-        x = sample["X1_indices"]
-        y = sample["X2_indices"]
-        z = sample["union_indices"]
-
-        a = sample["union_eigenvalues"]
-        b = sample["X1_eigenvalues"]
-        c = sample["X2_eigenvalues"]
-        k = 0
-        pass
-    # assert False
-    # # #
-    # #
-    # # # loader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=0)
-    # # #
-    # for x in tqdm(dataset):
-    #     pass
-    # #
-    # # # todo Dataset[0] non prende da cache?
-    # _generate_sample_cache(
-    #     dataset.template_eigen,
-    #     dataset.dataset_root,
-    #     "shape000024",
-    #     "pose0000235",
-    #     dataset[0]["X1_indices"],
-    #     dataset[0]["X2_indices"],
-    #     num_basis=ShapeEigendecomposition.get_random_num_basis(),
-    #     threshold=ShapeHamiltonianAugmenter.get_random_discretized_threshold(),
-    #     num_eigenvalues=20,
-    # )
-    #
-    # i = np.random.randint(0, len(dataset))
-    # print(i)
-    # i = 37344
-    # sample = dataset[i]
-    #
-    # plot_shapes_comparison(
-    #     meshes=[
-    #         mesh(
-    #             v=dataset.template_vertices.numpy(),
-    #             f=dataset.template_faces.numpy(),
-    #             color=sample["X1_indices"],
-    #         ),
-    #         mesh(
-    #             v=dataset.template_vertices.numpy(),
-    #             f=dataset.template_faces.numpy(),
-    #             color=sample["X2_indices"],
-    #         ),
-    #         mesh(
-    #             v=dataset.template_vertices.numpy(),
-    #             f=dataset.template_faces.numpy(),
-    #             color=sample["union_indices"],
-    #         ),
-    #     ],
-    #     names=["x1", "x2", "union"],
-    #     showscales=[False, False, False],
-    # ).show()
-    # assert False
-    # ind = sample["union_indices"]
-    #
-    # print("next")
-    # s = set()
-    #
-    # for i in tqdm(range(10000)):
-    #
-    #     x1_indices = get_augmented_mask(
-    #         template_eigen=dataset.template_eigen,
-    #         dataset_root=dataset.dataset_root,
-    #         identity_id=sample["identity_id"],
-    #         pose_id=sample["pose_id"],
-    #         mask=sample["X1_indices"],
-    #         num_basis_vectors=ShapeEigendecomposition.get_random_num_basis(),
-    #         threshold=ShapeHamiltonianAugmenter.get_random_discretized_threshold(),
-    #     )
-    #     s.add(x1_indices)
-    #     get_mask_evals(
-    #         template_eigen=dataset.template_eigen,
-    #         dataset_root=dataset.dataset_root,
-    #         identity_id=sample["identity_id"],
-    #         pose_id=sample["pose_id"],
-    #         mask=sample["X1_indices"],
-    #     )
-    #
-    # print(len(s))
-    # #
-    #
-    # assert False
-    # mat = scipy.io.loadmat("/home/luca/Desktop/test_3.mat")
-    #
-    # VERT = torch.from_numpy(mat["VERT"]).float().cpu()
-    # TRIV = torch.from_numpy(mat["TRIV"]).long().cpu()
-    # ind = torch.from_numpy(mat["ind"]).float().cpu()[0]
-
-    # vertex2faces = VF_adjacency_matrix(VERT, TRIV)
-    #
-    # assert False
-
-    # VERT = torch.from_numpy(dataset.template_vertices)
-    # TRIV = torch.from_numpy(dataset.template_faces.astype("long"))
-    # ind = dataset[2550]["union_indices"]
-    # sym = (
-    #     scipy.io.loadmat(
-    #         "/home/luca/Repositories/partial-shape-generator/partial_dataset_v2/SMPLsym.mat"
-    #     )["idxs"]
-    #     .squeeze()
-    #     .astype("long")
-    # )
-    # S = (
-    #     torch.sparse_coo_tensor(
-    #         indices=torch.stack(
-    #             (
-    #                 torch.arange(sym.shape[0]),
-    #                 torch.from_numpy(sym) - 1,
-    #             ),
-    #             dim=0,
-    #         ),
-    #         values=torch.ones(sym.shape[0]),
-    #         size=(VERT.shape[0], VERT.shape[0]),
-    #     )
-    #     .to_dense()
-    #     .bool()
-    #     .float()
-    # )
-    # sym_union_indices = torch.einsum("ij, bj -> bi", S, ind[None, :]).bool().float()[0]
-    #
-    # eigen = ShapeEigendecomposition(VERT, TRIV)
-    # s = ShapeHamiltonianAugmenter(eigen, VERT)
-    #
-    # ks = [0 for i in range(1)]
-    # plot_shapes_comparison(
-    #     meshes=[
-    #         mesh(
-    #             v=s.vertices.numpy(),
-    #             f=eigen.faces.numpy(),
-    #             color=ind,
-    #         ),
-    #         mesh(
-    #             v=s.vertices.numpy(),
-    #             f=eigen.faces.numpy(),
-    #             color=sym_union_indices,
-    #         ),
-    #     ],
-    #     names=["sym1", "sym1"],
-    #     showscales=[False, True],
-    # ).show()
-    #
-    # assert False
-    # import torch
-    #
-    # eigen = ShapeEigendecomposition(VERT, TRIV)
-    # s = ShapeHamiltonianAugmenter(eigen, VERT)
-    #
-    # ks = [0 for i in range(1)]
-    # plot_shapes_comparison(
-    #     meshes=[
-    #         mesh(
-    #             v=s.vertices.numpy(),
-    #             f=eigen.faces.numpy(),
-    #             color=ind,
-    #         ),
-    #         mesh(
-    #             v=s.vertices.numpy(),
-    #             f=eigen.faces.numpy(),
-    #             color=s.mask_random_augmentation(
-    #                 ind,
-    #                 eigen.get_random_num_basis(),
-    #                 s.get_random_discretized_threshold(),
-    #                 True,
-    #             ),
-    #         ),
-    #     ]
-    #     + [
-    #         mesh(
-    #             v=s.vertices.numpy(),
-    #             f=eigen.faces.numpy(),
-    #             color=s.mask_random_augmentation(
-    #                 ind,
-    #                 eigen.get_random_num_basis(),
-    #                 s.get_random_discretized_threshold(),
-    #             ).numpy(),
-    #         )
-    #         for x in ks
-    #     ],
-    #     names=["gournd truth", "projected"] + [f"_" for x in ks],
-    #     showscales=[False, True] + [False] * len(ks),
-    # ).show()
+# VERT = torch.from_numpy(dataset.template_vertices)
+# TRIV = torch.from_numpy(dataset.template_faces.astype("long"))
+# ind = dataset[2550]["union_indices"]
+# sym = (
+#     scipy.io.loadmat(
+#         "/home/luca/Repositories/partial-shape-generator/partial_dataset_v2/SMPLsym.mat"
+#     )["idxs"]
+#     .squeeze()
+#     .astype("long")
+# )
+# S = (
+#     torch.sparse_coo_tensor(
+#         indices=torch.stack(
+#             (
+#                 torch.arange(sym.shape[0]),
+#                 torch.from_numpy(sym) - 1,
+#             ),
+#             dim=0,
+#         ),
+#         values=torch.ones(sym.shape[0]),
+#         size=(VERT.shape[0], VERT.shape[0]),
+#     )
+#     .to_dense()
+#     .bool()
+#     .float()
+# )
+# sym_union_indices = torch.einsum("ij, bj -> bi", S, ind[None, :]).bool().float()[0]
+#
+# eigen = ShapeEigendecomposition(VERT, TRIV)
+# s = ShapeHamiltonianAugmenter(eigen, VERT)
+#
+# ks = [0 for i in range(1)]
+# plot_shapes_comparison(
+#     meshes=[
+#         mesh(
+#             v=s.vertices.numpy(),
+#             f=eigen.faces.numpy(),
+#             color=ind,
+#         ),
+#         mesh(
+#             v=s.vertices.numpy(),
+#             f=eigen.faces.numpy(),
+#             color=sym_union_indices,
+#         ),
+#     ],
+#     names=["sym1", "sym1"],
+#     showscales=[False, True],
+# ).show()
+#
+# assert False
+# import torch
+#
+# eigen = ShapeEigendecomposition(VERT, TRIV)
+# s = ShapeHamiltonianAugmenter(eigen, VERT)
+#
+# ks = [0 for i in range(1)]
+# plot_shapes_comparison(
+#     meshes=[
+#         mesh(
+#             v=s.vertices.numpy(),
+#             f=eigen.faces.numpy(),
+#             color=ind,
+#         ),
+#         mesh(
+#             v=s.vertices.numpy(),
+#             f=eigen.faces.numpy(),
+#             color=s.mask_random_augmentation(
+#                 ind,
+#                 eigen.get_random_num_basis(),
+#                 s.get_random_discretized_threshold(),
+#                 True,
+#             ),
+#         ),
+#     ]
+#     + [
+#         mesh(
+#             v=s.vertices.numpy(),
+#             f=eigen.faces.numpy(),
+#             color=s.mask_random_augmentation(
+#                 ind,
+#                 eigen.get_random_num_basis(),
+#                 s.get_random_discretized_threshold(),
+#             ).numpy(),
+#         )
+#         for x in ks
+#     ],
+#     names=["gournd truth", "projected"] + [f"_" for x in ks],
+#     showscales=[False, True] + [False] * len(ks),
+# ).show()

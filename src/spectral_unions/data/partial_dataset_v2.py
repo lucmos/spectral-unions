@@ -23,8 +23,8 @@ class PartialDatasetV2(CustomDataset):
         dataset_name: str,
         sample_key_list: List[str],
         boundary_conditions: str,
-        union_num_eigenvalues: str,
-        part_num_eigenvalues: str,
+        union_num_eigenvalues: int,
+        part_num_eigenvalues: int,
         return_mesh=False,
         evals_encoder: Optional[Callable] = None,
         no_evals_and_area=False,
@@ -176,7 +176,7 @@ def main(cfg: omegaconf.DictConfig) -> None:
     data = Path(get_env("PARTIAL_DATASET_V2"))
     trainset = (data / "datasplit_singleshape" / "train.txt").read_text().splitlines()
 
-    dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.train, sample_key_list=trainset, _recursive_=False)
+    dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.val[0], sample_key_list=trainset, _recursive_=False)
     loader = DataLoader(dataset, batch_size=32, num_workers=12, persistent_workers=False)
     for x in tqdm(loader):
         print(x["union_indices"].shape)

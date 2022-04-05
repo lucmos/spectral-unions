@@ -21,6 +21,7 @@ data:
       introduce_input_evals_noise: "${nn.data.introduce_input_evals_noise}"
       relative_area: "${nn.data.relative_area}"
       independent_augmentation: "${nn.data.independent_augmentation}"
+      train_datasplit_folder: "${nn.data.train_datasplit_folder}"
 
       gpus: "${train.trainer.gpus}"
 
