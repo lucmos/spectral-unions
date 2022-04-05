@@ -1,11 +1,14 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
+import hydra
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from omegaconf import omegaconf
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from nn_core.common import PROJECT_ROOT
 from nn_core.common.utils import get_env
 
 from spectral_unions.data.dataset_utils import CustomDataset, load_mat, multi_one_hot
@@ -17,16 +20,16 @@ class PartialDatasetV2(CustomDataset):
 
     def __init__(
         self,
-        hparams: dict,
         dataset_name: str,
         sample_key_list: List[str],
+        boundary_conditions: str,
+        union_num_eigenvalues: str,
+        part_num_eigenvalues: str,
         return_mesh=False,
-        compute_area=False,  # todo: togli questo parametro
         evals_encoder: Optional[Callable] = None,
         no_evals_and_area=False,
     ):
-        self.hparams: dict = hparams
-        self.boundary_conditions = self.hparams["params"]["global"]["boundary_conditions"].lower()
+        self.boundary_conditions = boundary_conditions.lower()
         assert self.boundary_conditions in {"neumann", "dirichlet"}
         self.evals_filename = f"evals_{self.boundary_conditions}.mat"
 
@@ -34,8 +37,8 @@ class PartialDatasetV2(CustomDataset):
         self.dataset_name = dataset_name
         self.dataset_root: Path = Path(get_env(dataset_name))
 
-        self.union_num_eigenvalues: int = hparams["params"]["global"]["union_num_eigenvalues"]
-        self.part_num_eigenvalues: int = hparams["params"]["global"]["part_num_eigenvalues"]
+        self.union_num_eigenvalues: int = union_num_eigenvalues
+        self.part_num_eigenvalues: int = part_num_eigenvalues
 
         self.template_vertices = load_mat(self.dataset_root / "extras", "VERT.mat")
         self.template_faces = load_mat(self.dataset_root / "extras", "TRIV.mat") - 1
@@ -47,7 +50,6 @@ class PartialDatasetV2(CustomDataset):
             raise FileNotFoundError(f"No such database: {self.dataset_root}")
 
         self.return_meshes = return_mesh
-        self.compute_area = compute_area
         self.evals_encoder = evals_encoder
 
     def __len__(self) -> int:
@@ -163,18 +165,23 @@ class PartialDatasetV2(CustomDataset):
         return sample
 
 
-# fixme: broken
-load_config = ...
-if __name__ == "__main__":
-    config_name = "experiment.yml"
+@hydra.main(config_path=str(PROJECT_ROOT / "conf"), config_name="default")
+def main(cfg: omegaconf.DictConfig) -> None:
+    """Debug main to quickly develop the Dataset.
 
-    cfg = load_config(config_name)
+    Args:
+        cfg: the hydra configuration
+    """
 
     data = Path(get_env("PARTIAL_DATASET_V2"))
-    trainset = (data / "partial_union_samples_train.txt").read_text().splitlines()
-    dataset = PartialDatasetV2(cfg, trainset, return_mesh=False)
+    trainset = (data / "datasplit_singleshape" / "train.txt").read_text().splitlines()
 
+    dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.train, sample_key_list=trainset, _recursive_=False)
     loader = DataLoader(dataset, batch_size=32, num_workers=12, persistent_workers=False)
     for x in tqdm(loader):
         print(x["union_indices"].shape)
         break
+
+
+if __name__ == "__main__":
+    main()
