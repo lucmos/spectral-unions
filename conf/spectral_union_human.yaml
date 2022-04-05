@@ -1,0 +1,22 @@
+# metadata specialised for each experiment
+core:
+  project_name: spectral-unions
+  storage_dir: ${oc.env:PROJECT_ROOT}/storage
+  version: 0.0.1
+  tags:
+    - end2end
+    - spectral_union_prediction
+
+global:
+  boundary_conditions: dirichlet
+  num_vertices: 6890
+  part_num_eigenvalues: 20
+  union_num_eigenvalues: 20
+
+defaults:
+  - hydra: default
+  - nn: spectral_union_human
+  - train: default
+  - _self_ # as last argument to allow the override of parameters via this main config
+#    Decomment this parameter to get parallel job running
+#  - hydra/launcher: joblib

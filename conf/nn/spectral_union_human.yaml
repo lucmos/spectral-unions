@@ -10,8 +10,7 @@ data:
 
   datasets:
     train:
-      _target_: spectral_unions.data.augmented_dataset.PartialAugmentedDataset
-#      _target_: spectral_unions.data.random_augmented_dataset.RandomAugmentedDataset
+      _target_: spectral_unions.data.random_augmented_dataset.RandomAugmentedDataset
       dataset_name: "${nn.data.name}"
       boundary_conditions: "${global.boundary_conditions}"
       union_num_eigenvalues: "${global.union_num_eigenvalues}"
@@ -27,7 +26,7 @@ data:
 
 
     val:
-      - _target_: spectral_unions.data.partial_dataset_v2.PartialDatasetV2
+      - _target_: spectral_unions.data.augmented_dataset.PartialAugmentedDataset
         dataset_name: "${nn.data.name}"
         boundary_conditions: "${global.boundary_conditions}"
         union_num_eigenvalues: "${global.union_num_eigenvalues}"

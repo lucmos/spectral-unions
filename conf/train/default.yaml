@@ -18,7 +18,7 @@ trainer:
 
 restore:
   ckpt_or_run_path: null
-  mode: continue # null, finetune, hotstart, continue
+  mode: null # null, finetune, hotstart, continue
 
 monitor:
   metric: 'val_loss'
