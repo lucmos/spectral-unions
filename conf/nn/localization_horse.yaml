@@ -1,0 +1,108 @@
+data:
+  _target_: spectral_unions.data.datamodule.MyDataModule
+
+  independent_augmentation: true
+  introduce_input_evals_noise: false
+  min_union_prior: true
+  name: PARTIAL_DATASET_V2_horses
+  relative_area: true
+  train_datasplit_folder: datasplit_multishape
+
+  datasets:
+    train:
+      _target_: spectral_unions.data.random_augmented_dataset.RandomAugmentedDataset
+      dataset_name: "${nn.data.name}"
+      boundary_conditions: "${global.boundary_conditions}"
+      union_num_eigenvalues: "${global.union_num_eigenvalues}"
+      part_num_eigenvalues: "${global.part_num_eigenvalues}"
+
+      min_union_prior: "${nn.data.min_union_prior}"
+      introduce_input_evals_noise: "${nn.data.introduce_input_evals_noise}"
+      relative_area: "${nn.data.relative_area}"
+      independent_augmentation: "${nn.data.independent_augmentation}"
+      train_datasplit_folder: "${nn.data.train_datasplit_folder}"
+
+      gpus: "${train.trainer.gpus}"
+
+
+    val:
+      - _target_: spectral_unions.data.augmented_dataset.PartialAugmentedDataset
+        dataset_name: "${nn.data.name}"
+        boundary_conditions: "${global.boundary_conditions}"
+        union_num_eigenvalues: "${global.union_num_eigenvalues}"
+        part_num_eigenvalues: "${global.part_num_eigenvalues}"
+#    test:
+#      - _target_: spectral_unions.data.dataset.MyDataset
+
+  gpus: ${train.trainer.gpus}
+
+  num_workers:
+    train: 6
+    val: 3
+#    test: 4
+
+  batch_size:
+    train: 32
+    val: 16
+#    test: 16
+
+
+preprocessing:
+  evals_transform: offset
+
+module:
+  _target_: spectral_unions.pl_modules.localization.maskmodel_parametric_horse.MaskModelParametricHorse
+
+  freeze_encoder: true
+  freeze_decoder: null
+
+  encoder_class_weights: null # todo fill in
+  decoder_class_weights: null
+
+  encoder:
+    _target_: UnionTransformerV6
+    decoder_dim_feedforward: 32
+    decoder_dropout: 0.1
+    decoder_nhead: 8
+    decoder_nlayers: 3
+    encoder_dim_feedforward: 64
+    encoder_dropout: 0.1
+    encoder_nhead: 8
+    encoder_nlayers: 6
+    evals_embedding_dim: 32
+    last_relu: false
+
+  decoder:
+    _target_: DecoderLayerNormDenseHorse
+    hidden_dim1: 1300
+    hidden_dim2: 2000
+    hidden_dim3: 3000
+    last_sigmoid: true
+    p_dropout: 0.5
+
+  optimizer:
+    #  Adam-oriented deep learning
+    _target_: torch.optim.Adam
+    #  These are all default parameters for the Adam optimizer
+    lr: 5e-5
+    weight_decay: 1e-6
+
+  lr_scheduler:
+    _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+    T_0: 10
+    T_mult: 2
+    eta_min: 0 # min value for the lr
+    last_epoch: -1
+    verbose: true
+
+loss:
+  evals:
+    alpha: 1.0
+    fun: squared_relative_error
+    loss_between_encodings: false
+    params: null
+  mask:
+    alpha: 10.0
+    fun: mse
+    gt_decoder: true
+    params: null

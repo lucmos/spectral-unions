@@ -4,19 +4,19 @@ core:
   storage_dir: ${oc.env:PROJECT_ROOT}/storage
   version: 0.0.1
   tags:
-    - end2end
-    - spectral_union_prediction
+    - localization
+    - horse
 
 global:
   boundary_conditions: dirichlet
-  num_vertices: 6890
+  num_vertices: 3400
   part_num_eigenvalues: 20
   union_num_eigenvalues: 20
 
 defaults:
   - hydra: default
-  - nn: default
-  - train: default
+  - nn: localization_horse
+  - train: localization
   - _self_ # as last argument to allow the override of parameters via this main config
 #    Decomment this parameter to get parallel job running
 #  - hydra/launcher: joblib
