@@ -1,11 +1,14 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
+import hydra
 import numpy as np
+import omegaconf
 import torch
-from pytorch_lightning import seed_everything
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
+from nn_core.common import PROJECT_ROOT
 from nn_core.common.utils import get_env
 
 from spectral_unions.data.dataset_utils import CustomDataset, load_mat
@@ -17,20 +20,22 @@ class RemeshDataset(CustomDataset):
 
     def __init__(
         self,
-        hparams: dict,
         dataset_name: str,
+        union_num_eigenvalues: str,
+        part_num_eigenvalues: str,
+        relative_area: bool,
         return_mesh=False,
         evals_encoder: Optional[Callable] = None,
+        **kwargs,
     ):
-        self.hparams: dict = hparams
         self.dataset_name = dataset_name
         self.dataset_root: Path = Path(get_env(dataset_name))
         self.samples_file = self.dataset_root / "samples.txt"
         self.sample_key_list: List[str] = self.samples_file.read_text().splitlines()
 
-        self.relative_area = self.hparams["params"]["dataset"]["relative_area"]
-        self.union_num_eigenvalues: int = hparams["params"]["global"]["union_num_eigenvalues"]
-        self.part_num_eigenvalues: int = hparams["params"]["global"]["part_num_eigenvalues"]
+        self.relative_area = relative_area
+        self.union_num_eigenvalues: int = union_num_eigenvalues
+        self.part_num_eigenvalues: int = part_num_eigenvalues
 
         self.template_vertices = torch.from_numpy(load_mat(self.dataset_root / "extras", "VERT.mat"))
         self.template_faces = torch.from_numpy(load_mat(self.dataset_root / "extras", "TRIV.mat").astype("long")) - 1
@@ -120,22 +125,22 @@ class RemeshDataset(CustomDataset):
         return sample
 
 
-# fixme: broken
-load_config = ...
-if __name__ == "__main__":
-    seed_everything(0)
-    config_name = "experiment.yml"
+@hydra.main(config_path=str(PROJECT_ROOT / "conf"), config_name="default")
+def main(cfg: omegaconf.DictConfig) -> None:
+    """Debug main to quickly develop the Dataset.
 
-    cfg = load_config(config_name)
+    Args:
+        cfg: the hydra configuration
+    """
 
-    data = Path(get_env("PARTIAL_DATASET_V2"))
-    dataset = RemeshDataset(
-        cfg,
-        dataset_name="REMESH_DATASET_test",
-        return_mesh=True,
-    )
-    print(dataset.samples_file)
-    for i in tqdm(dataset):
-        print(i)
+    cfg.nn.data.name = "REMESH_DATASET_test"
+    cfg.nn.data.datasets.train._target_ = "spectral_unions.data.remesh_dataset.RemeshDataset"
+    dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.train, _recursive_=False)
+    loader = DataLoader(dataset, batch_size=32, num_workers=12, persistent_workers=False)
+    for x in tqdm(loader):
+        print(x["union_indices"].shape)
         break
-    assert False
+
+
+if __name__ == "__main__":
+    main()
