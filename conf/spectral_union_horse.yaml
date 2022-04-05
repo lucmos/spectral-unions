@@ -6,17 +6,17 @@ core:
   tags:
     - end2end
     - spectral_union_prediction
-    - human
+    - horse
 
 global:
   boundary_conditions: dirichlet
-  num_vertices: 6890
+  num_vertices: 3400
   part_num_eigenvalues: 20
   union_num_eigenvalues: 20
 
 defaults:
   - hydra: default
-  - nn: spectral_union_human
+  - nn: spectral_union_horse
   - train: default
   - _self_ # as last argument to allow the override of parameters via this main config
 #    Decomment this parameter to get parallel job running
