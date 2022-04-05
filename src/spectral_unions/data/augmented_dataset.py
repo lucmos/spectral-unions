@@ -1,10 +1,15 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
+import hydra
 import numpy as np
+import omegaconf
 import scipy
 import torch
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
+from nn_core.common import PROJECT_ROOT
 from nn_core.common.utils import get_env
 
 from spectral_unions.data.dataset_utils import (
@@ -24,34 +29,36 @@ class PartialAugmentedDataset(CustomDataset):
 
     def __init__(
         self,
-        hparams: dict,
         dataset_name: str,
         sample_key_list: List[str],
+        boundary_conditions: str,
+        union_num_eigenvalues: str,
+        part_num_eigenvalues: str,
+        min_union_prior: bool,
+        independent_augmentation: bool,
+        relative_area: bool,
+        gpus: int,
+        introduce_input_evals_noise: bool = False,
         return_mesh=False,
         evals_encoder: Optional[Callable] = None,
         augment: bool = True,
     ):
-        self.hparams: dict = hparams
         self.augment = augment
-        self.boundary_conditions = self.hparams["params"]["global"]["boundary_conditions"].lower()
+        self.boundary_conditions = boundary_conditions.lower()
         assert self.boundary_conditions == "dirichlet"
         self.evals_filename = f"evals_{self.boundary_conditions}.mat"
 
-        self.min_union_prior = self.hparams["params"]["dataset"]["min_union_prior"]
-        self.independent_augmentation = self.hparams["params"]["dataset"]["independent_augmentation"]
-        self.introduce_input_evals_noise = (
-            self.hparams["params"]["dataset"]["introduce_input_evals_noise"]
-            if "introduce_input_evals_noise" in self.hparams["params"]["dataset"]
-            else False
-        )
-        self.relative_area = self.hparams["params"]["dataset"]["relative_area"]
+        self.min_union_prior = min_union_prior
+        self.independent_augmentation = independent_augmentation
+        self.introduce_input_evals_noise = introduce_input_evals_noise
+        self.relative_area = relative_area
 
         self.sample_key_list: List[str] = sample_key_list
         self.dataset_name = dataset_name
         self.dataset_root: Path = Path(get_env(dataset_name))
 
-        self.union_num_eigenvalues: int = hparams["params"]["global"]["union_num_eigenvalues"]
-        self.part_num_eigenvalues: int = hparams["params"]["global"]["part_num_eigenvalues"]
+        self.union_num_eigenvalues: int = union_num_eigenvalues
+        self.part_num_eigenvalues: int = part_num_eigenvalues
 
         self.template_vertices = torch.from_numpy(load_mat(self.dataset_root / "extras", "VERT.mat"))
         self.template_faces = torch.from_numpy(load_mat(self.dataset_root / "extras", "TRIV.mat").astype("long")) - 1
@@ -89,6 +96,9 @@ class PartialAugmentedDataset(CustomDataset):
 
         self.default_augmentation_threshold_x1 = 0.5
         self.default_augmentation_threshold_x2 = 0.5
+
+        self.gpus = gpus
+        self.device = "cpu" if gpus == 0 else "cuda"
 
     def __len__(self) -> int:
         """
@@ -145,6 +155,7 @@ class PartialAugmentedDataset(CustomDataset):
                 mask=x1_indices,
                 num_basis_vectors=x1_num_basis,
                 threshold=x1_threshold,
+                device=self.device,
             )
             x2_indices = get_augmented_mask(
                 template_eigen=self.template_eigen,
@@ -154,6 +165,7 @@ class PartialAugmentedDataset(CustomDataset):
                 mask=x2_indices,
                 num_basis_vectors=x2_num_basis,
                 threshold=x2_threshold,
+                device=self.device,
             )
         else:
             x1_indices = get_augmented_mask(
@@ -164,6 +176,7 @@ class PartialAugmentedDataset(CustomDataset):
                 mask=x1_indices,
                 num_basis_vectors=self.default_augmentation_num_basis_x1,
                 threshold=self.default_augmentation_threshold_x1,
+                device=self.device,
             )
             x2_indices = get_augmented_mask(
                 template_eigen=self.template_eigen,
@@ -173,6 +186,7 @@ class PartialAugmentedDataset(CustomDataset):
                 mask=x2_indices,
                 num_basis_vectors=self.default_augmentation_num_basis_x2,
                 threshold=self.default_augmentation_threshold_x2,
+                device=self.device,
             )
 
         union_indices = (x1_indices + x2_indices).bool().float()
@@ -194,6 +208,7 @@ class PartialAugmentedDataset(CustomDataset):
             pose_id=pose_id,
             mask=union_indices,
             k=self.union_num_eigenvalues,
+            device=self.device,
         )
         x1_evals = get_mask_evals(
             template_eigen=self.template_eigen,
@@ -202,6 +217,7 @@ class PartialAugmentedDataset(CustomDataset):
             pose_id=pose_id,
             mask=x1_indices,
             k=self.part_num_eigenvalues,
+            device=self.device,
         )
         x2_evals = get_mask_evals(
             template_eigen=self.template_eigen,
@@ -210,6 +226,7 @@ class PartialAugmentedDataset(CustomDataset):
             pose_id=pose_id,
             mask=x2_indices,
             k=self.part_num_eigenvalues,
+            device=self.device,
         )
 
         sample: Dict[str, torch.Tensor] = {
@@ -584,3 +601,25 @@ class PartialAugmentedDataset(CustomDataset):
 #     #     names=["gournd truth", "projected"] + [f"_" for x in ks],
 #     #     showscales=[False, True] + [False] * len(ks),
 #     # ).show()
+
+
+@hydra.main(config_path=str(PROJECT_ROOT / "conf"), config_name="default")
+def main(cfg: omegaconf.DictConfig) -> None:
+    """Debug main to quickly develop the Dataset.
+
+    Args:
+        cfg: the hydra configuration
+    """
+
+    data = Path(get_env("PARTIAL_DATASET_V2"))
+    trainset = (PROJECT_ROOT / data / "datasplit_singleshape" / "train.txt").read_text().splitlines()
+
+    dataset: Dataset = hydra.utils.instantiate(cfg.nn.data.datasets.train, sample_key_list=trainset, _recursive_=False)
+    loader = DataLoader(dataset, batch_size=32, num_workers=12, persistent_workers=False)
+    for x in tqdm(loader):
+        print(x["union_indices"].shape)
+        break
+
+
+if __name__ == "__main__":
+    main()

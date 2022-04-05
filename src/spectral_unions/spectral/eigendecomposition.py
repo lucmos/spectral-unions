@@ -81,7 +81,7 @@ class ShapeHamiltonianAugmenter:
         self,
         template_eigendecomposition,
         vertices,
-        device="cuda",
+        device,
     ):
         self.template_eigendecomposition = template_eigendecomposition
 
@@ -118,7 +118,7 @@ class ShapeHamiltonianAugmenter:
             )
             return phi.detach().cpu().float(), lam.detach().cpu().float()
 
-    def mask_random_augmentation(self, mask, num_basis_vectors, threshold, return_projected=False, device="cuda"):
+    def mask_random_augmentation(self, mask, num_basis_vectors, threshold, device, return_projected=False):
         with torch.no_grad():
             if num_basis_vectors in self.template_eigendecomposition.projectors:
                 projector = self.template_eigendecomposition.projectors[num_basis_vectors].to(device)

@@ -25,10 +25,10 @@ cache_path = PROJECT_ROOT / "data" / "cache" / "augmented_dataset_v2_cache"  # T
 
 
 @functools.lru_cache(maxsize=None)
-def get_shape_augmenter(template_eigen, dataset_name: str, identity_id: str, pose_id: str):
+def get_shape_augmenter(template_eigen, dataset_name: str, identity_id: str, pose_id: str, device: str):
     dataset_root = Path(get_env(dataset_name))
     vertices = torch.from_numpy(load_mat(dataset_root / identity_id / pose_id, "VERT.mat"))
-    return ShapeHamiltonianAugmenter(template_eigen, vertices)
+    return ShapeHamiltonianAugmenter(template_eigen, vertices, device=device)
 
 
 def get_augmented_mask(
@@ -39,6 +39,7 @@ def get_augmented_mask(
     mask,
     num_basis_vectors,
     threshold,
+    device,
 ):
     original_dataset_name = dataset_name
 
@@ -56,9 +57,9 @@ def get_augmented_mask(
     else:
         # assert False, filepath
 
-        augmenter = get_shape_augmenter(template_eigen, original_dataset_name, identity_id, pose_id)
+        augmenter = get_shape_augmenter(template_eigen, original_dataset_name, identity_id, pose_id, device=device)
         augmented_mask = augmenter.mask_random_augmentation(
-            mask, num_basis_vectors=num_basis_vectors, threshold=threshold
+            mask, num_basis_vectors=num_basis_vectors, threshold=threshold, device=device
         )
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with filepath.open("wb") as f:
@@ -66,7 +67,7 @@ def get_augmented_mask(
             return augmented_mask
 
 
-def get_mask_evals(template_eigen, dataset_name: str, identity_id: str, pose_id: str, mask, k=20):
+def get_mask_evals(template_eigen, dataset_name: str, identity_id: str, pose_id: str, mask, device, k=20):
     original_dataset_name = dataset_name
     if dataset_name == "PARTIAL_DATASET_V2":
         dataset_name = dataset_name.lower()
@@ -82,7 +83,7 @@ def get_mask_evals(template_eigen, dataset_name: str, identity_id: str, pose_id:
     else:
         # assert False, filepath
 
-        augmenter = get_shape_augmenter(template_eigen, original_dataset_name, identity_id, pose_id)
+        augmenter = get_shape_augmenter(template_eigen, original_dataset_name, identity_id, pose_id, device=device)
         _, evals = augmenter.get_hamiltonian_evals(mask, k=k)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with filepath.open("wb") as f:
