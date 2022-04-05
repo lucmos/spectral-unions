@@ -1,4 +1,8 @@
-# spectral-unions
+:construction::construction::construction: **We are currently refactoring and cleaning the codebase. It will be ready in the next months. Please feel free to contact us directly if you have specific requests.** :construction::construction::construction:
+
+---
+
+# Learning Spectral Unions of Partial Deformable 3D Shapes
 
 <p align="center">
     <a href="https://github.com/lucmos/spectral-unions/actions/workflows/test_suite.yml"><img alt="CI" src=https://img.shields.io/github/workflow/status/lucmos/spectral-unions/Test%20Suite/main?label=main%20checks></a>
