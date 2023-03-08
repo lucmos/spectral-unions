@@ -1,7 +1,3 @@
-:construction::construction::construction: **We are currently refactoring and cleaning the codebase. It will be ready in the next months. Please feel free to contact us directly if you have specific requests.** :construction::construction::construction:
-
----
-
 # Learning Spectral Unions of Partial Deformable 3D Shapes
 
 <p align="center">
